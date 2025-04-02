@@ -1,5 +1,7 @@
 package com.sixback.backend.domain.controller;
 
+import com.sixback.backend.common.service.RedisService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +24,9 @@ import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
+
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 스타일 화장 관련 요청을 처리하는 컨트롤러.
@@ -67,6 +72,37 @@ public class StyleController {
 			// 가상 화장이 생성된 후 다른 스타일을 미리 가져옴 (pre-fetching)
 			.doOnSuccess(response -> styleService.prefetchOtherStyles(marketId, styleMakeupReqDto));
 	}
+
+/*
+	// 방식2: Redis에 해당 합성이미지가 없었을 때만 prefetch 수행
+	@PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+	public Mono<ResponseEntity<ResponseDto<StyleResultDto>>> createStyleMakeup3(
+			@PathVariable("marketId") Long marketId,
+			@Valid @ModelAttribute StyleMakeupReqDto styleMakeupReqDto) {
+
+		// 캐시 키 미리 생성
+		String currentStyleCacheKey = styleService.generateCacheKey(marketId, styleMakeupReqDto.getStyleId(), styleMakeupReqDto);
+
+		// 먼저 캐시 확인
+		return Mono.fromCallable(() -> redisService.getData(currentStyleCacheKey, String.class))
+				.flatMap(cachedImage -> {
+					log.info("HoHoHoHo");
+					// 캐시 히트: 캐시된 결과를 사용하고 prefetch 없이 즉시 반환
+					StyleResultDto result = styleService.buildStyleResultDto(cachedImage, styleMakeupReqDto.getStyleId(), marketId);
+					return Mono.just(new ResponseEntity<>(new ResponseDto<>("A00", result), HttpStatus.OK));
+				})
+				.switchIfEmpty(
+						// 캐시 미스: 요청된 스타일 처리 후 prefetch 실행
+						styleService.createStyleMakeup(marketId, styleMakeupReqDto)
+								.map(styleResultDto -> new ResponseEntity<>(new ResponseDto<>("A00", styleResultDto), HttpStatus.OK))
+								.doOnSuccess(response -> {
+									// 캐시 미스인 경우에만 prefetch 실행
+									styleService.prefetchOtherStyles(marketId, styleMakeupReqDto);
+									log.info("Hello");
+								})
+				);
+		}
+	*/
 
 	/**
 	 * 현재 스타일에 사용된 모든 상품 위치 또는 특정 상품의 상세 정보를 조회하는 메서드.
