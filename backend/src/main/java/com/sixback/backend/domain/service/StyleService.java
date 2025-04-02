@@ -91,8 +91,11 @@ public class StyleService {
 		// 스타일 식별 번호 검증
 		Style style = styleRepository.findById(styleMakeupReqDto.getStyleId())
 			.orElseThrow(StyleNotFoundException::new);
-		// 화장 스타일 로그 저장
-		logService.saveMakeupStyleLog("style_makeup", styleMakeupReqDto.getStyleId(), marketId);
+
+		// 화장 스타일 로그 저장 (비동기 처리)
+		Mono.fromRunnable(() ->
+				logService.saveMakeupStyleLog("style_makeup", style.getStyleId(), marketId)
+		).subscribeOn(Schedulers.boundedElastic()).subscribe(); // 블로킹 작업을 별도 스레드에서 실행
 
 		// 사용된 상품 정보 조회 (비동기 처리)
 		Mono<List<OptionInfoDto>> useOptionInfoListMono = Mono.fromCallable(() ->
@@ -102,18 +105,20 @@ public class StyleService {
 		String cacheKey = generateCacheKey(marketId, style.getStyleId(), styleMakeupReqDto);
 		// RedisService를 사용하여 캐시된 이미지 존재 확인 후, 없으면 GAN 서비스 호출
 		Mono<String> makeupImageMono = Mono.fromCallable(() ->
-			redisService.getData(cacheKey, String.class)
-		).switchIfEmpty(
-			ganClientService.sendRequest(
-				GanRequestDto.builder()
-					.inputImage(styleMakeupReqDto.getInputImage())
-					.styleImage(style.getStyleImage())
-					.build()
-			).doOnNext(result ->
-				// 결과를 캐시
-				redisService.setDataExpire(cacheKey, result, redisStyleCacheSeconds)
-			)
-		);
+						redisService.getData(cacheKey, String.class)
+				).subscribeOn(Schedulers.boundedElastic()) // 별도 스레드에서 실행
+				.switchIfEmpty(
+						ganClientService.sendRequest(
+								GanRequestDto.builder()
+										.inputImage(styleMakeupReqDto.getInputImage())
+										.styleImage(style.getStyleImage())
+										.build()
+						).doOnNext(result -> {
+							Mono.fromRunnable(() ->
+									redisService.setDataExpire(cacheKey, result, redisStyleCacheSeconds)
+							).subscribeOn(Schedulers.boundedElastic()).subscribe(); // 별도 스레드에서 실행
+						})
+				);
 
 		// 두 작업 병렬 처리 후 결과를 조합
 		return Mono.zip(useOptionInfoListMono, makeupImageMono)
@@ -189,15 +194,18 @@ public class StyleService {
 		for (Style otherStyle : otherStyles) {
 			// 비동기로 각 스타일에 대한 합성 요청 처리
 			ganClientService.sendRequest(GanRequestDto.builder()
-					.inputImage(styleMakeupReqDto.getInputImage())
-					.styleImage(otherStyle.getStyleImage())
-					.build())
-				.flatMap(makeupImage -> {
-					// 결과를 캐시
-					String cacheKey = generateCacheKey(marketId, otherStyle.getStyleId(), styleMakeupReqDto);
-					redisService.setDataExpire(cacheKey, makeupImage, redisStyleCacheSeconds);
-					return Mono.empty();
-				}).subscribe(); // 비동기적으로 실행
+							.inputImage(styleMakeupReqDto.getInputImage())
+							.styleImage(otherStyle.getStyleImage())
+							.build())
+					.flatMap(makeupImage -> {
+						// 결과를 캐시
+						String cacheKey = generateCacheKey(marketId, otherStyle.getStyleId(), styleMakeupReqDto);
+						// 비동기 Redis 저장 (블로킹 방지)
+						Mono.fromRunnable(() ->
+								redisService.setDataExpire(cacheKey, makeupImage, redisStyleCacheSeconds)
+						).subscribeOn(Schedulers.boundedElastic()).subscribe();
+						return Mono.empty();
+					}).subscribe(); // 비동기적으로 실행
 		}
 	}
 
@@ -220,4 +228,15 @@ public class StyleService {
 		// generateKey 메서드 활용
 		return redisService.generateKey(STYLE_PREFIX, baseString);
 	}
+	/*
+	// 방식2에서 사용하는 메서드(주석)
+	public StyleResultDto buildStyleResultDto(String cachedImage, Long styleId, Long marketId) {
+		List<OptionInfoDto> allUseOptionInfoList = styleRepository.findAllUseOptionInfoList(marketId, styleId);
+		return StyleResultDto.builder()
+				.styleId(styleId)
+				.goodsOptionList(allUseOptionInfoList)
+				.makeupImage(cachedImage)
+				.build();
+	}
+	 */
 }

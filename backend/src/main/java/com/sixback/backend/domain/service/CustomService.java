@@ -16,6 +16,7 @@ import com.sixback.backend.domain.repository.GoodsOptionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * 커스텀 화장 관련 서비스.
@@ -65,12 +66,16 @@ public class CustomService {
 		fileService.validateFileSize(customMakeupReqDto.getInputImage());
 		// 매장 유효성 검사
 		marketService.validateMarket(marketId);
+
 		// 커스텀 합성 로그 저장
-		logService.saveMakeupCustomLog("custom_makeup", marketId,
-			customMakeupReqDto.getEyebrowColor(),
-			customMakeupReqDto.getSkinColor(),
-			customMakeupReqDto.getLipColor(),
-			customMakeupReqDto.getLipMode());
+		Mono.fromRunnable(() ->
+				logService.saveMakeupCustomLog("custom_makeup", marketId,
+						customMakeupReqDto.getEyebrowColor(),
+						customMakeupReqDto.getSkinColor(),
+						customMakeupReqDto.getLipColor(),
+						customMakeupReqDto.getLipMode())
+		).subscribeOn(Schedulers.boundedElastic()).subscribe(); // 블로킹 작업을 별도 스레드에서 실행
+
 		// Facer 서버로 커스텀 화장 요청
 		return facerClientService.sendRequest(customMakeupReqDto)
 			.map(result -> CustomResultDto.builder()
